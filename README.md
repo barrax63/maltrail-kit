@@ -18,7 +18,7 @@ Docker Compose deployment of [Maltrail](https://github.com/stamparm/maltrail), b
 
 ## Features
 
-- Maltrail server and sensor built from `../maltrail` (`docker/Dockerfile`), with no file in the checkout edited
+- Maltrail server and sensor built from `../source` (`docker/Dockerfile`), with no file in the checkout edited
 - Layered configuration: upstream defaults stay current after a `git pull`, and only your changes live in this repo
 - Server, and the nginx in front of it, are optional through the `server` profile
 - Nginx reverse proxy with HTTPS (self-signed certificates, same setup as backup-kit). The UI port 8338 is never published.
@@ -30,8 +30,8 @@ Docker Compose deployment of [Maltrail](https://github.com/stamparm/maltrail), b
 ## Directory Structure
 
 ```text
-<parent>/
-├── maltrail/                        # git clone of stamparm/maltrail — never edited
+maltrail/
+├── source/                          # git clone of stamparm/maltrail — never edited
 └── maltrail-kit/
     ├── docker-compose.yml
     ├── .env.example                 # role, ports, upstream path
@@ -48,7 +48,7 @@ Docker Compose deployment of [Maltrail](https://github.com/stamparm/maltrail), b
 
 Maltrail reads a single `maltrail.conf`. Editing the tracked upstream file would make every `git pull` conflict, and copying it would freeze its defaults (feeds, capture filter, severity regexes) at the day you copied it. So `maltrail-config`, a one-shot container, concatenates three layers into the `maltrail_config` volume on every `docker compose up`:
 
-1. `../maltrail/maltrail.conf`: upstream defaults, refreshed by `git pull`
+1. `../source/maltrail.conf`: upstream defaults, refreshed by `git pull`
 2. `config/maltrail.kit.conf`: settings this stack depends on (ports, `USE_SSL false`, `LOG_DIR`)
 3. `config/maltrail.local.conf`: your per-host settings and secrets (gitignored)
 
@@ -61,8 +61,9 @@ Do this on **each** host.
 ### 1. Clone both repositories side by side
 
 ```bash
-git clone https://github.com/stamparm/maltrail.git
-git clone <your remote>/maltrail-kit.git
+mkdir maltrail && cd maltrail
+git clone https://github.com/stamparm/maltrail.git source
+git clone https://github.com/barrax63/maltrail-kit.git
 cd maltrail-kit
 ```
 
@@ -142,7 +143,7 @@ The first start downloads and builds the trail set. The sensor turns healthy wit
 
 ```bash
 git pull                                 # this kit
-git -C ../maltrail pull                  # upstream Maltrail
+git -C ../source pull                    # upstream Maltrail
 docker compose pull --ignore-buildable   # nginx, busybox
 docker compose build --pull              # Maltrail image on fresh base images
 docker compose up -d
@@ -151,7 +152,7 @@ docker compose up -d
 `up` re-runs `maltrail-config`, so new upstream defaults take effect. Before you upgrade, look at what changed in upstream's container setup. The compose file here mirrors `docker/docker-compose.yml` and relies on `docker/entrypoint.sh`:
 
 ```bash
-git -C ../maltrail fetch && git -C ../maltrail log --oneline HEAD..@{u} -- docker/ maltrail.conf
+git -C ../source fetch && git -C ../source log --oneline HEAD..@{u} -- docker/ maltrail.conf
 ```
 
 ### Change the configuration

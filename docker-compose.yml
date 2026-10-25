@@ -3,15 +3,15 @@
 # =============================================================================
 # Builds from an UNMODIFIED upstream checkout next to this folder:
 #
-#   <parent>/
-#     maltrail/        git clone https://github.com/stamparm/maltrail  (git pull)
+#   maltrail/
+#     source/          git clone https://github.com/stamparm/maltrail  (git pull)
 #     maltrail-kit/    this stack
 #
 # Nothing in the checkout is edited — not even maltrail.conf — so `git pull`
 # never conflicts. The effective configuration is assembled at every start by
 # `maltrail-config` from three layers (later lines win for the same option):
 #
-#   1. ../maltrail/maltrail.conf      upstream defaults, tracked by git pull
+#   1. ../source/maltrail.conf        upstream defaults, tracked by git pull
 #   2. config/maltrail.kit.conf       container invariants of this stack
 #   3. config/maltrail.local.conf     per-host settings and secrets (gitignored)
 #
@@ -19,7 +19,7 @@
 #   server + sensor host:  COMPOSE_PROFILES=server
 #   sensor-only host:      COMPOSE_PROFILES=        (empty)
 #
-# Upgrade:  git -C ../maltrail pull && docker compose up -d --build
+# Upgrade:  git -C ../source pull && docker compose up -d --build
 # =============================================================================
 
 name: maltrail-kit
@@ -50,7 +50,7 @@ x-security-baseline: &security-baseline
 x-maltrail: &service-maltrail
   <<: *security-baseline
   build:
-    context: ${MALTRAIL_SRC:-../maltrail}
+    context: ${MALTRAIL_SRC:-../source}
     dockerfile: docker/Dockerfile
   image: maltrail-kit/maltrail:local
   # No `init: true`: the image already runs tini as PID 1.
@@ -93,7 +93,7 @@ services:
       # Long form with create_host_path: false — a wrong MALTRAIL_SRC must fail
       # here, not make Docker create an empty directory named maltrail.conf.
       - type: bind
-        source: ${MALTRAIL_SRC:-../maltrail}/maltrail.conf
+        source: ${MALTRAIL_SRC:-../source}/maltrail.conf
         target: /merge/upstream.conf
         read_only: true
         bind:
