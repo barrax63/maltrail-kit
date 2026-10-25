@@ -39,3 +39,6 @@
 
 # Keep no local copy of the events (they are only stored on the server).
 #DISABLE_LOCAL_LOG_STORAGE true
+
+# Limit Maltrail capture ring.
+CAPTURE_BUFFER_SIZE 32MB
