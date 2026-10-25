@@ -1,0 +1,41 @@
+# =============================================================================
+# maltrail-kit — per-host settings (layer 3 of 3)
+# =============================================================================
+#   cp config/maltrail.local.conf.example config/maltrail.local.conf
+#
+# maltrail.local.conf is gitignored: it holds the password hashes and the
+# shared secret. Same syntax as maltrail.conf, and any option from it can go
+# here — it wins over the upstream file and maltrail.kit.conf.
+# An array (USERS, IP_ALIASES, ...) set here REPLACES the upstream one whole.
+#
+# After editing:  docker compose up -d --force-recreate
+# =============================================================================
+
+# ---- every host ------------------------------------------------------------
+
+# Authenticates sensor -> server events (HMAC). Without it, anything that can
+# reach the server's 8337/udp can inject fake detections. Use the SAME value on
+# the server and on every sensor:   openssl rand -hex 32
+#LOG_SERVER_SECRET <64 hex characters>
+
+# Name the sensor reports under. Default: the host's name.
+#SENSOR_NAME server1
+
+# ---- server host (COMPOSE_PROFILES=server) ---------------------------------
+
+# Login(s) for the reporting UI. Hash a password with:
+#   docker compose run --rm --no-deps maltrail-server python3 server.py --hash-password
+# Fields: username:password_hash:UID:filter_netmask(s)
+#   UID 0 = admin; UID >= 1000 = read-only, custom trails masked.
+# Leaving USERS unset keeps upstream's admin/changeme!, which the server only
+# accepts from its own loopback — i.e. no login through nginx.
+#USERS
+#    admin:pbkdf2-sha256$50000$<salt>$<hash>:0:
+
+# ---- sensor-only host (COMPOSE_PROFILES empty) -----------------------------
+
+# Where to send events: the server host's address and EVENTS_UDP_PORT.
+#LOG_SERVER 192.0.2.10:8337
+
+# Keep no local copy of the events (they are only stored on the server).
+#DISABLE_LOCAL_LOG_STORAGE true

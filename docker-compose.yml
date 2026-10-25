@@ -1,0 +1,266 @@
+# =============================================================================
+# maltrail-kit — Maltrail sensor (always) + server and HTTPS proxy (optional)
+# =============================================================================
+# Builds from an UNMODIFIED upstream checkout next to this folder:
+#
+#   <parent>/
+#     maltrail/        git clone https://github.com/stamparm/maltrail  (git pull)
+#     maltrail-kit/    this stack
+#
+# Nothing in the checkout is edited — not even maltrail.conf — so `git pull`
+# never conflicts. The effective configuration is assembled at every start by
+# `maltrail-config` from three layers (later lines win for the same option):
+#
+#   1. ../maltrail/maltrail.conf      upstream defaults, tracked by git pull
+#   2. config/maltrail.kit.conf       container invariants of this stack
+#   3. config/maltrail.local.conf     per-host settings and secrets (gitignored)
+#
+# Roles, selected by COMPOSE_PROFILES in .env:
+#   server + sensor host:  COMPOSE_PROFILES=server
+#   sensor-only host:      COMPOSE_PROFILES=        (empty)
+#
+# Upgrade:  git -C ../maltrail pull && docker compose up -d --build
+# =============================================================================
+
+name: maltrail-kit
+
+volumes:
+  maltrail_config:
+  maltrail_logs:
+  maltrail_state:
+
+networks:
+  main:
+    driver: bridge
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-security-baseline: &security-baseline
+  security_opt:
+    - no-new-privileges:true
+    - apparmor=docker-default
+  cap_drop:
+    - ALL
+
+# ---- shared template for server + sensor (same image, different command) ---
+x-maltrail: &service-maltrail
+  <<: *security-baseline
+  build:
+    context: ${MALTRAIL_SRC:-../maltrail}
+    dockerfile: docker/Dockerfile
+  image: maltrail-kit/maltrail:local
+  # No `init: true`: the image already runs tini as PID 1.
+  restart: unless-stopped
+  # The upstream entrypoint starts as root only long enough to pick the uid that
+  # can write the log/state volumes, then execs the process through setpriv as
+  # uid 10001. Writes go to the volumes below; everything else is read-only.
+  read_only: true
+  tmpfs:
+    - /tmp:noexec,nosuid,nodev,size=64m
+  # No env_file on purpose: Maltrail treats every MALTRAIL_<OPTION> variable as
+  # an override of that config option, so passing .env through wholesale could
+  # silently change the configuration. Only explicit variables go in.
+  environment:
+    - TZ=${TZ:-UTC}
+  volumes:
+    - /etc/localtime:/etc/localtime:ro
+    - maltrail_config:/etc/maltrail:ro
+    - maltrail_logs:/var/log/maltrail
+    - maltrail_state:/var/lib/maltrail
+  depends_on:
+    maltrail-config:
+      condition: service_completed_successfully
+  logging: *default-logging
+
+services:
+
+  # ===========================================================================
+  # ONE-SHOT INIT — merge upstream + kit + local config into maltrail_config
+  # ===========================================================================
+  maltrail-config:
+    <<: *security-baseline
+    image: busybox:latest
+    user: root
+    # Reads two bind mounts and writes one volume; it needs no network at all.
+    network_mode: none
+    restart: "no"
+    read_only: true
+    volumes:
+      # Long form with create_host_path: false — a wrong MALTRAIL_SRC must fail
+      # here, not make Docker create an empty directory named maltrail.conf.
+      - type: bind
+        source: ${MALTRAIL_SRC:-../maltrail}/maltrail.conf
+        target: /merge/upstream.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./config
+        target: /merge/kit
+        read_only: true
+        bind:
+          create_host_path: false
+      - maltrail_config:/out
+    # `echo` after each layer: a file without a trailing newline would otherwise
+    # glue its last line onto the next layer's first option.
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        overlay=/merge/kit/maltrail.local.conf
+        if [ ! -f "$$overlay" ]; then
+          echo "maltrail-config: config/maltrail.local.conf is missing." >&2
+          echo "maltrail-config: cp config/maltrail.local.conf.example config/maltrail.local.conf" >&2
+          exit 1
+        fi
+        for f in /merge/upstream.conf /merge/kit/maltrail.kit.conf "$$overlay"; do
+          cat "$$f"
+          echo
+        done > /out/maltrail.conf.new
+        chmod 0444 /out/maltrail.conf.new
+        mv -f /out/maltrail.conf.new /out/maltrail.conf
+        echo "maltrail-config: wrote /etc/maltrail/maltrail.conf"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 32M
+        reservations:
+          cpus: '0.05'
+          memory: 8M
+    logging: *default-logging
+
+  # ===========================================================================
+  # SERVER — reporting UI (8338/tcp, behind nginx) + event intake (8337/udp)
+  # ===========================================================================
+  maltrail-server:
+    <<: *service-maltrail
+    profiles: ["server"]
+    hostname: maltrail-server
+    networks: ['main']
+    command: ["python3", "server.py", "-c", "/etc/maltrail/maltrail.conf"]
+    # Entrypoint only: CHOWN to adopt a fresh volume, SETUID/SETGID for setpriv.
+    # The server captures nothing and binds no port below 1024.
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    # 8338/tcp is NOT published: the UI is reachable only through nginx.
+    # 8337/udp must reach remote sensors. Docker-published ports bypass ufw/firewalld,
+    # so bind EVENTS_UDP_BIND to the interface the sensors use (e.g. a WireGuard IP).
+    ports:
+      - "${EVENTS_UDP_BIND:-0.0.0.0}:${EVENTS_UDP_PORT:-8337}:8337/udp"
+    # Same probe as the image's own HEALTHCHECK (/ping is unauthenticated and
+    # answers "pong"), on a shorter interval so nginx is not held back a minute.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8338/ping', timeout=5).read().strip() == b'pong' else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # ===========================================================================
+  # SENSOR — packet capture on the host's interfaces
+  # ===========================================================================
+  maltrail-sensor:
+    <<: *service-maltrail
+    # Host network namespace: inside a bridge the sensor would only ever see
+    # container traffic. (Also why there is no `hostname:` — Docker rejects it
+    # with host networking; SENSOR_NAME defaults to the host's name instead.)
+    network_mode: host
+    command: ["maltrail-sensor", "-c", "/etc/maltrail/maltrail.conf"]
+    environment:
+      - TZ=${TZ:-UTC}
+      # The config lives outside the source tree, so name the tree explicitly
+      # (data/, feeds/, core/update.py) instead of relying on the cwd fallback.
+      - MALTRAIL_ROOT=/opt/maltrail
+    # NET_RAW: AF_PACKET socket. NET_ADMIN: promiscuous mode + PACKET_FANOUT.
+    # CHOWN/SETUID/SETGID: entrypoint, as for the server. The entrypoint hands
+    # NET_RAW/NET_ADMIN to the unprivileged sensor via ambient capabilities.
+    # NOT privileged.
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - NET_RAW
+      - NET_ADMIN
+    # `-T` validates config, trails, whitelist, log dir, capture filter and
+    # capabilities. It goes through the entrypoint so it runs as the same
+    # unprivileged uid as the sensor (a HEALTHCHECK bypasses ENTRYPOINT).
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/maltrail-entrypoint", "maltrail-sensor", "-c", "/etc/maltrail/maltrail.conf", "-T"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 180s
+    # Headroom for the trail updater (core/update.py, spawned by the sensor) and
+    # the capture ring (CAPTURE_BUFFER_SIZE, up to 256MB per worker by default).
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+
+  # ===========================================================================
+  # TLS TERMINATION — nginx in front of the reporting UI
+  # ===========================================================================
+  nginx:
+    <<: *security-baseline
+    profiles: ["server"]
+    image: nginx:stable-alpine
+    hostname: nginx
+    networks: ['main']
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    ports:
+      - "${NGINX_PORT:-8443}:8443"
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    # CHOWN/SETUID/SETGID: master process drops privileges to the nginx user.
+    # NET_BIND_SERVICE not needed: nginx listens on 8443.
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    depends_on:
+      maltrail-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "--no-check-certificate", "https://localhost:8443/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 32M
+    logging: *default-logging

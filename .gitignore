@@ -1,0 +1,10 @@
+nginx/certs/server.crt
+nginx/certs/server.key
+
+# Per-host Maltrail settings: password hashes and LOG_SERVER_SECRET
+config/maltrail.local.conf
+
+# Environment files
+.env
+.env.local
+.env.*.local
