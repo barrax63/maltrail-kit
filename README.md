@@ -7,13 +7,13 @@ Docker Compose deployment of [Maltrail](https://github.com/stamparm/maltrail), b
 | Server + sensor | `server` | `maltrail-config`, `maltrail-sensor`, `maltrail-server`, `nginx` |
 | Sensor only | *(empty)* | `maltrail-config`, `maltrail-sensor` → reports to the server over UDP |
 
-```
-                 Server 1 (COMPOSE_PROFILES=server)                Server 2 (sensor only)
-  browser ──HTTPS:8443──▶ nginx ──▶ maltrail-server ◀──UDP:8337── maltrail-sensor
-                                          ▲                         (host network)
-                                   maltrail_logs volume
-                                          │
-                                   maltrail-sensor (host network)
+```text
+                 Server 1 (COMPOSE_PROFILES=server)                    Server 2 (sensor only)
+  browser ─HTTPS:NGINX_PORT─▶ nginx ──▶ maltrail-server ◀──UDP:8337── maltrail-sensor
+                                              ▲                         (host network)
+                                       maltrail_logs volume
+                                              │
+                                       maltrail-sensor (host network)
 ```
 
 ## Features
@@ -29,7 +29,7 @@ Docker Compose deployment of [Maltrail](https://github.com/stamparm/maltrail), b
 
 ## Directory Structure
 
-```
+```text
 <parent>/
 ├── maltrail/                        # git clone of stamparm/maltrail — never edited
 └── maltrail-kit/
@@ -93,7 +93,7 @@ cp config/maltrail.local.conf.example config/maltrail.local.conf
 
 **Server 1:**
 
-```
+```text
 LOG_SERVER_SECRET <the value from step 3>
 SENSOR_NAME server1
 USERS
@@ -109,7 +109,7 @@ docker compose run --rm --no-deps maltrail-server python3 server.py --hash-passw
 
 **Server 2:**
 
-```
+```text
 LOG_SERVER_SECRET <the value from step 3>
 SENSOR_NAME server2
 LOG_SERVER <server 1 address>:8337
@@ -134,7 +134,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-The first start downloads and builds the trail set. The sensor turns healthy within about 3 minutes. Then open `https://<server 1>:8443`. Server 2 appears under **Sensors** in the UI once its first heartbeat arrives, after at most `HEARTBEAT_PERIOD` (300 s).
+The first start downloads and builds the trail set. The sensor turns healthy within about 3 minutes. Then open `https://<server 1>:<NGINX_PORT>`, using the port from `.env`. Server 2 appears under **Sensors** in the UI once its first heartbeat arrives, after at most `HEARTBEAT_PERIOD` (300 s).
 
 ## Maintenance
 
@@ -180,7 +180,7 @@ docker compose exec maltrail-sensor cat /etc/maltrail/maltrail.conf   # the merg
 | --- | --- | --- |
 | Bind-mounts the repo's `maltrail.conf` | Merges three layers into a volume | Upgrades without editing tracked files |
 | Server always runs | `server` profile | Sensor-only hosts |
-| UI published on 8338 over plain HTTP | Unpublished, behind nginx on 8443 with TLS | HTTPS and per-client login throttling |
+| UI published on 8338 over plain HTTP | Unpublished, behind nginx with TLS on `NGINX_PORT` | HTTPS and per-client login throttling |
 | 8337/udp on all interfaces | `EVENTS_UDP_BIND:EVENTS_UDP_PORT` | Docker ports bypass the host firewall |
 | Default capability set | `cap_drop: ALL` + only what the entrypoint/capture need | House baseline |
 | Writable root filesystem | `read_only: true` + `/tmp` tmpfs | All writes go to the volumes |
